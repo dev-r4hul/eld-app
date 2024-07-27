@@ -3,6 +3,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+token.json
+
 # C extensions
 *.so
 
@@ -58,7 +60,6 @@ celerybeat.pid
 
 # Environments
 .env
-.env.*
 .venv
 venv/
 ENV/
