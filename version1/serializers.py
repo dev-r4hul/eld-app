@@ -18,7 +18,6 @@ class ScheduleRequestSerializer(serializers.Serializer):
     pickup_time = serializers.DateTimeField()
     dropoff_time = serializers.DateTimeField()
     loading_time = serializers.IntegerField()
-    sleeper_berth_flexibility = serializers.BooleanField(default=True)
     truck_type = serializers.ChoiceField(
         choices=[("property", "Property"), ("passenger", "Passenger")]
     )
