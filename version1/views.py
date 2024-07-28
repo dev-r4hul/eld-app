@@ -6,12 +6,14 @@ from version1.serializers import (
     TruckSerializer,
     DriverSerializer,
     ScheduleRequestSerializer,
+    DutyStatusSerializer,
 )
 from version1.utils import (
     check_hos_compliance,
     plan_driving_schedule,
     db_update_drivers,
     db_update_trucks,
+    check_hos_violation
 )
 
 
@@ -51,14 +53,8 @@ class DriverViewSet(APIView):
             return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-# class HOSViolationListView(APIView):
-#     def get(self, request):
-#         violations = HOSViolation.objects.all()
-#         serializer = HOSViolationSerializer(violations, many=True)
-#         return Response(serializer.data, status=status.HTTP_200_OK)
-
-
 class DriverViolationView(APIView):
+
     def get(self, request, driver_id=None):
         if driver_id:
             try:
@@ -82,6 +78,27 @@ class DriverViolationView(APIView):
                     violation_list.append(violationDict)
 
             return Response(violation_list, status=status.HTTP_200_OK)
+
+    def post(self, request, driver_id=None):
+
+        if driver_id:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        
+        serializer = DutyStatusSerializer(data=request.data)
+        
+        if serializer.is_valid():
+            data = serializer.validated_data
+            try:
+                violation, corrected_schedule = check_hos_violation(**data)
+            except Exception as ex:
+                return Response({'error':str(ex)},status=status.HTTP_400_BAD_REQUEST)
+
+            return Response({
+                'violation': violation,
+                'corrected_schedule': corrected_schedule
+            }, status=status.HTTP_200_OK)
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ScheduleView(APIView):
@@ -136,3 +153,4 @@ class UpdateDbView(APIView):
                     {"message": "Not able to update drivers/trucks in database"},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
+

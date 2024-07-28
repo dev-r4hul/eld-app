@@ -1,8 +1,8 @@
-import math
 from datetime import timedelta
 from version1.models import Truck, Driver
 from version1.proLogsClient import PrologsAPIClient
 from django.db import transaction
+from dateutil import parser
 
 
 def db_update_drivers() -> bool:
@@ -217,68 +217,50 @@ def check_hos_compliance(driver):
     return violations
 
 
+'''
 def plan_driving_schedule(
     pickup_time,
     dropoff_time,
-    total_distance,
-    avg_speed,
-    sleeper_berth_flexibility,
-    driver_type="property",
+    loading_time: int,
+    sleeper_berth_flexibility: bool,
+    driver_type: str = "property",
 ):
     """
     Plan a driver's driving schedule based on pickup and dropoff times, including sleeper berth provision.
 
-    :param pickup_time: Scheduled pickup time (datetime object)
-    :param dropoff_time: Scheduled dropoff time (datetime object)
-    :param total_distance: Total distance to be covered (in miles)
-    :param avg_speed: Average driving speed (in miles per hour)
-    :param sleeper_berth_flexibility: Boolean indicating if sleeper berth provision can be used
-    :param driver_type: 'property' for property-carrying drivers or 'passenger' for passenger-carrying drivers
-    :return: A driving schedule dict with detailed plan and HOS compliance status
+    :return: A driving schedule dict with detailed plan
     """
 
+    # Constants for driver rules
     if driver_type == "property":
         MAX_DRIVING_HOURS = 11
         REST_HOURS = 10
-        MAX_SHIFT_HOURS = 14
     else:  # Passenger
         MAX_DRIVING_HOURS = 10
         REST_HOURS = 8
-        MAX_SHIFT_HOURS = 15
 
-    # Calculate total driving time needed
-    total_driving_time = total_distance / avg_speed
-    total_driving_hours = math.ceil(
-        total_driving_time
-    )  # Round up to the nearest hour for planning
-
-    # Calculate time available until dropoff
+    # Calculate the time available until dropoff and driving time available after loading
     time_until_dropoff = dropoff_time - pickup_time
-    available_hours = time_until_dropoff.total_seconds() / 3600
+    total_driving_time = time_until_dropoff - timedelta(minutes=loading_time)
+    total_driving_hours = total_driving_time.total_seconds() / 3600
+    driving_start_time = pickup_time + timedelta(minutes=loading_time)
 
-    # Initialize schedule
     schedule = {
-        "start_time": pickup_time,
+        "start_time": driving_start_time,
         "driving_periods": [],
         "rest_periods": [],
         "total_driving_hours": 0,
         "total_rest_hours": 0,
-        "hos_compliance": True,
-        "message": "",
     }
 
-    # If total driving hours exceed available hours, we can't make it on time
-    if total_driving_hours > available_hours:
-        schedule["hos_compliance"] = False
-        schedule["message"] = "Unable to meet dropoff time within HOS limits."
-        return schedule
-
     # Calculate driving and rest periods
-    current_driving_hours = 0
-    current_rest_hours = 0
-    driving_start_time = pickup_time
-
-    while total_driving_hours > 0:
+    while total_driving_hours > 0 and (
+        driving_start_time
+        + timedelta(
+            hours=(schedule["total_driving_hours"] + schedule["total_rest_hours"])
+        )
+        <= dropoff_time
+    ):
         # Calculate driving session
         driving_hours = min(total_driving_hours, MAX_DRIVING_HOURS)
         driving_end_time = driving_start_time + timedelta(hours=driving_hours)
@@ -291,69 +273,279 @@ def plan_driving_schedule(
                 "hours": driving_hours,
             }
         )
+        # Check if more driving is needed
+        if total_driving_hours <= 0:
+            break
 
-        # Update schedule totals
         schedule["total_driving_hours"] += driving_hours
         total_driving_hours -= driving_hours
-        current_driving_hours += driving_hours
+
+        # Calculate rest period
+        if sleeper_berth_flexibility and driving_hours >= 7:
+            # Use sleeper berth provision
+            rest_hours_1 = 3
+            rest_end_time_1 = driving_end_time + timedelta(hours=rest_hours_1)
+            schedule["rest_periods"].append(
+                {
+                    "start": driving_end_time,
+                    "end": rest_end_time_1,
+                    "hours": rest_hours_1,
+                }
+            )
+
+            # Calculate second rest
+            rest_hours_2 = REST_HOURS - rest_hours_1
+            rest_end_time_2 = rest_end_time_1 + timedelta(hours=rest_hours_2)
+            schedule["rest_periods"].append(
+                {
+                    "start": rest_end_time_1,
+                    "end": rest_end_time_2,
+                    "hours": rest_hours_2,
+                }
+            )
+
+            # Adjust start time
+            driving_start_time = rest_end_time_2
+
+        else:
+            # Full rest period
+            rest_hours = REST_HOURS
+            rest_end_time = driving_end_time + timedelta(hours=rest_hours)
+            schedule["rest_periods"].append(
+                {"start": driving_end_time, "end": rest_end_time, "hours": rest_hours}
+            )
+            driving_start_time = rest_end_time
+
+        # Update rest totals
+        schedule["total_rest_hours"] += REST_HOURS
+
+    schedule["message"] = "Schedule planned successfully within the given limits."
+
+    return schedule
+
+'''
+
+
+from datetime import datetime, timedelta
+
+
+def plan_driving_schedule(
+    pickup_time,
+    dropoff_time,
+    loading_time: int,
+    sleeper_berth_flexibility: bool,
+    truck_type: str = "property",
+):
+    """
+    Plan a driver's driving schedule based on pickup and dropoff times, including sleeper berth provision.
+
+    :return: A driving schedule dict with a detailed plan
+    """
+
+    # Constants for driver rules
+    if truck_type == "property":
+        MAX_DRIVING_HOURS = 11
+        REST_HOURS = 10
+    else:  # Passenger
+        MAX_DRIVING_HOURS = 10
+        REST_HOURS = 8
+
+    # Calculate the time available until dropoff and driving time available after loading
+    time_until_dropoff = dropoff_time - pickup_time
+    total_driving_time = time_until_dropoff - timedelta(minutes=loading_time)
+    total_driving_hours = total_driving_time.total_seconds() / 3600
+    driving_start_time = pickup_time + timedelta(minutes=loading_time)
+
+    print(total_driving_hours)
+
+    schedule = {
+        "start_time": driving_start_time,
+        "driving_periods": [],
+        "rest_periods": [],
+        "total_driving_hours": 0,
+        "total_rest_hours": 0,
+    }
+
+    # Calculate driving and rest periods
+    while total_driving_hours > 0:
+        # Calculate driving session
+        driving_hours = min(total_driving_hours, MAX_DRIVING_HOURS)
+
+        # # Check if the driving end time will exceed dropoff time
+        # if driving_start_time + timedelta(hours=driving_hours) > dropoff_time:
+        #     driving_hours = (dropoff_time - driving_start_time).total_seconds() / 3600
+
+        driving_end_time = driving_start_time + timedelta(hours=driving_hours)
+
+        # Add driving session to schedule
+        schedule["driving_periods"].append(
+            {
+                "start": driving_start_time,
+                "end": driving_end_time,
+                "hours": driving_hours,
+            }
+        )
+
+        print(driving_start_time, driving_end_time, driving_hours, "?????????")
+
+        schedule["total_driving_hours"] += driving_hours
+        total_driving_hours -= driving_hours
 
         # Check if more driving is needed
         if total_driving_hours <= 0:
             break
 
         # Calculate rest period
-        if sleeper_berth_flexibility and current_driving_hours >= 7:
-            # Use sleeper berth split
-            rest_hours = 3
-            current_rest_hours += rest_hours
+        if sleeper_berth_flexibility and driving_hours >= 7:
+            # Use sleeper berth provision
+            rest_hours_1 = 3
 
-            # First rest split
-            rest_end_time = driving_end_time + timedelta(hours=2)
+            # Calculate first rest end time
+            rest_end_time_1 = driving_end_time + timedelta(hours=rest_hours_1)
             schedule["rest_periods"].append(
-                {"start": driving_end_time, "end": rest_end_time, "hours": 2}
+                {
+                    "start": driving_end_time,
+                    "end": rest_end_time_1,
+                    "hours": rest_hours_1,
+                }
             )
-            driving_start_time = rest_end_time
 
-            # Second rest split
-            rest_end_time = driving_start_time + timedelta(hours=1)
+            # Calculate second rest
+            rest_hours_2 = REST_HOURS - rest_hours_1
+
+            # Calculate second rest end time
+            rest_end_time_2 = rest_end_time_1 + timedelta(hours=rest_hours_2)
+
+            if rest_end_time_2 > dropoff_time:
+                rest_hours_2 = (dropoff_time - rest_end_time_1).total_seconds() / 3600
+                rest_end_time_2 = dropoff_time
+
             schedule["rest_periods"].append(
-                {"start": driving_start_time, "end": rest_end_time, "hours": 1}
+                {
+                    "start": rest_end_time_1,
+                    "end": rest_end_time_2,
+                    "hours": rest_hours_2,
+                }
             )
-            driving_start_time = rest_end_time
 
-            # Reset sleeper berth flexibility
-            sleeper_berth_flexibility = False
+            # Adjust start time
+            driving_start_time = rest_end_time_2
+            rest_hours = rest_hours_1 + rest_hours_2
+
         else:
             # Full rest period
             rest_hours = REST_HOURS
-            current_rest_hours += rest_hours
             rest_end_time = driving_end_time + timedelta(hours=rest_hours)
-            schedule["rest_periods"].append(
-                {"start": driving_end_time, "end": rest_end_time, "hours": rest_hours}
-            )
-            driving_start_time = rest_end_time
-            current_driving_hours = 0
 
-        # Update schedule totals
+            if rest_end_time > dropoff_time:
+                rest_hours = (dropoff_time - driving_end_time).total_seconds() / 3600
+                rest_end_time = dropoff_time
+
+            if rest_hours:
+                schedule["rest_periods"].append(
+                    {
+                        "start": driving_end_time,
+                        "end": rest_end_time,
+                        "hours": rest_hours,
+                    }
+                )
+
+            driving_start_time = rest_end_time
+
+        # Update rest totals
         schedule["total_rest_hours"] += rest_hours
 
-        # Check if we're exceeding shift limits
-        if (driving_start_time - pickup_time).total_seconds() / 3600 > MAX_SHIFT_HOURS:
-            schedule["hos_compliance"] = False
-            schedule["message"] = "Exceeded maximum shift hours without adequate rest."
-            return schedule
+        # Ensure that the next driving period doesn't start after dropoff time
+        if driving_start_time >= dropoff_time:
+            break
 
-    # Final check for HOS compliance
-    if (
-        schedule["total_driving_hours"] > MAX_DRIVING_HOURS
-        or schedule["total_rest_hours"] < REST_HOURS
-    ):
-        schedule["hos_compliance"] = False
-        schedule["message"] = (
-            "HOS violation detected: Driving or rest hours exceeded limits."
-        )
+    # # Ensure the last driving or rest ends at the dropoff time
+    # last_period = (
+    #     schedule["driving_periods"][-1]
+    #     if schedule["driving_periods"]
+    #     else schedule["rest_periods"][-1]
+    # )
 
-    if schedule["hos_compliance"]:
-        schedule["message"] = "Schedule is compliant with HOS regulations."
+    # if last_period["end"] < dropoff_time:
+    #     # Extend the last period to meet the dropoff time
+    #     extension_hours = (dropoff_time - last_period["end"]).total_seconds() / 3600
+
+    #     if "driving_periods" in last_period:
+    #         # Extend driving period if it's the last one
+    #         last_period["hours"] += extension_hours
+    #         last_period["end"] = dropoff_time
+    #         schedule["total_driving_hours"] += extension_hours
+    #     else:
+    #         # Extend rest period if it's the last one
+    #         last_period["hours"] += extension_hours
+    #         last_period["end"] = dropoff_time
+    #         schedule["total_rest_hours"] += extension_hours
+
+    schedule["message"] = "Schedule planned successfully within the given limits."
 
     return schedule
+
+
+def check_hos_violation(
+    pickup_time, dropoff_time, duty_statuses, truck_type="property"
+):
+    """
+    Checks for HOS violations based on given duty statuses.
+
+    :return: tuple - (violation, corrected_schedule)
+    """
+
+    if truck_type == "property":
+        MAX_DRIVING_HOURS = 11
+        REST_HOURS = 10
+    else:  # Passenger
+        MAX_DRIVING_HOURS = 10
+        REST_HOURS = 8
+
+    violation = False
+    corrected_schedule = []
+
+    for i, duty_status in enumerate(duty_statuses):
+        start_time = parser.parse(duty_status["start_time"])
+        end_time = parser.parse(duty_status["end_time"])
+
+        if end_time < start_time:
+            raise Exception(f"Invalid time interval {start_time} - {end_time}")
+
+        if i == 0:
+            if start_time < pickup_time:
+                raise Exception(
+                    f"Invalid start_time {start_time} : start_time must be equal or greater than pickup_time"
+                )
+        else:
+            if start_time < parser.parse(duty_statuses[i - 1]["end_time"]):
+                raise Exception(
+                    f"Invalid start_time {start_time} : start_time must be equal or greater than end_time of previous status"
+                )
+
+        status = duty_status["status"]
+        duration = (end_time - start_time).total_seconds() / 3600
+
+        if status in ("driving", "D") and duration > MAX_DRIVING_HOURS:
+            violation = True
+            corrected_schedule.append(
+                {
+                    "suggestion": f"Exceeded driving limit between {start_time} - {end_time}. Recommend rest for {REST_HOURS} hours.",
+                }
+            )
+
+        if (
+            status in ("off_duty", "sleeper_berth", "SB", "OFF")
+            and duration < REST_HOURS
+        ):
+            violation = True
+            corrected_schedule.append(
+                {
+                    "suggestion": f"Insufficient rest between {start_time} - {end_time}. Increase rest time to {int(REST_HOURS - duration)} hours.",
+                }
+            )
+
+    if not violation:
+        corrected_schedule.append({"suggestion": "No violations detected."})
+
+    return violation, corrected_schedule
