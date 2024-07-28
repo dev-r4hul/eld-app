@@ -1,145 +1,55 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-import requests
-from django.db import transaction
-from .models import Truck, Driver, HOSViolation
-from .serializers import TruckSerializer, DriverSerializer,HOSViolationSerializer
-from .utils import get_access_token
+from version1.models import Truck, Driver, HOSViolation
+from version1.serializers import (
+    TruckSerializer,
+    DriverSerializer,
+    HOSViolationSerializer,
+    ScheduleRequestSerializer,
+)
+from version1.utils import (
+    check_hos_compliance,
+    plan_driving_schedule,
+    db_update_drivers,
+    db_update_trucks,
+)
 
-class TruckListView(APIView):
-    def get(self, request):
-        access_token = get_access_token()
-        headers = {
-            'Authorization': f'Bearer {access_token}'
-        }
 
-        response = requests.get('https://publicapi-stage.prologs.us/api/v1/trucks', headers=headers)
-
-        if response.status_code == 401:
-            access_token = get_access_token(refresh=True)
-            headers = {
-                'Authorization': f'Bearer {access_token}'
-            }
-            response = requests.get('https://publicapi-stage.prologs.us/api/v1/trucks', headers=headers)
-        
-
-        if response.status_code == 200:
-            trucks_data = response.json()
-
-            new_trucks = []
-            update_trucks = []
-            existing_trucks = Truck.objects.in_bulk(field_name='name')
-            
-            for truck_data in trucks_data:
-                truck_name = truck_data['name']
-                location = truck_data.get('location')
-                latitude = truck_data.get('lat')
-                longitude = truck_data.get('lng')
-                speed = truck_data.get('speed')
-                
-                if truck_name in existing_trucks:
-                    truck = existing_trucks[truck_name]
-                    truck.location = location
-                    truck.latitude = latitude
-                    truck.longitude = longitude
-                    truck.speed = speed
-                    update_trucks.append(truck)
-                else:
-                    new_trucks.append(Truck(
-                        name=truck_name,
-                        location=location,
-                        latitude=latitude,
-                        longitude=longitude,
-                        speed=speed
-                    ))
-
-            with transaction.atomic():
-                Truck.objects.bulk_create(new_trucks, ignore_conflicts=True)
-                Truck.objects.bulk_update(update_trucks, fields=['location', 'latitude', 'longitude', 'speed'])
-
+class TruckViewSet(APIView):
+    def get(self, request, truck_id=None):
+        if truck_id:
+            try:
+                truckObj = Truck.objects.get(name=truck_id)
+            except Truck.DoesNotExist:
+                return Response(
+                    {"error": "Truck not found"}, status=status.HTTP_404_NOT_FOUND
+                )
+            else:
+                serializer = TruckSerializer(truckObj)
+                return Response(serializer.data, status=status.HTTP_200_OK)
+        else:
             trucks = Truck.objects.all()
             serializer = TruckSerializer(trucks, many=True)
             return Response(serializer.data, status=status.HTTP_200_OK)
-        
-        return Response({'error': 'Failed to fetch data from ProLogs API'}, status=response.status_code)
 
-class DriverListView(APIView):
-    def get(self, request):
-        access_token = get_access_token()
-        headers = {
-            'Authorization': f'Bearer {access_token}'
-        }
 
-        response = requests.get('https://publicapi-stage.prologs.us/api/v1/drivers', headers=headers)
-        
-        if response.status_code == 401:
-            access_token = get_access_token(refresh=True)
-            headers = {
-                'Authorization': f'Bearer {access_token}'
-            }
-            response = requests.get('https://publicapi-stage.prologs.us/api/v1/drivers', headers=headers)
-            
-        if response.status_code == 200:
-            drivers_data = response.json()
-
-            existing_drivers = Driver.objects.in_bulk(field_name='driver_id')
-            existing_trucks = Truck.objects.in_bulk(field_name='name')
-
-            new_drivers = []
-            update_drivers = []
-
-            for driver_data in drivers_data:
-                driver_id = driver_data['driverId']
-                truck_name = driver_data.get('truckName')
-                truck = existing_trucks.get(truck_name) 
-
-                driver_defaults = {
-                    'truck': truck,
-                    'duty_status': driver_data.get('dutyStatus'),
-                    'duty_status_start_time': driver_data.get('dutyStatusStartTime'),
-                    'shift_work_minutes': driver_data.get('shiftWorkMinutes'),
-                    'shift_drive_minutes': driver_data.get('shiftDriveMinutes'),
-                    'cycle_work_minutes': driver_data.get('cycleWorkMinutes'),
-                    'max_shift_work_minutes': driver_data.get('maxShiftWorkMinutes', 840),
-                    'max_shift_drive_minutes': driver_data.get('maxShiftDriveMinutes', 660),
-                    'max_cycle_work_minutes': driver_data.get('maxCycleWorkMinutes', 4200),
-                    'home_terminal_timezone_windows': driver_data.get('homeTerminalTimeZoneWindows'),
-                    'home_terminal_timezone_iana': driver_data.get('homeTerminalTimeZoneIana'),
-                }
-
-                if driver_id in existing_drivers:
-                    driver = existing_drivers[driver_id]
-                    for field, value in driver_defaults.items():
-                        setattr(driver, field, value)
-                    update_drivers.append(driver)
-                else:
-                    new_drivers.append(Driver(driver_id=driver_id, **driver_defaults))
-
-            with transaction.atomic():
-                Driver.objects.bulk_create(new_drivers, ignore_conflicts=True)
-                Driver.objects.bulk_update(
-                    update_drivers,
-                    fields=[
-                        'truck',
-                        'duty_status',
-                        'duty_status_start_time',
-                        'shift_work_minutes',
-                        'shift_drive_minutes',
-                        'cycle_work_minutes',
-                        'max_shift_work_minutes',
-                        'max_shift_drive_minutes',
-                        'max_cycle_work_minutes',
-                        'home_terminal_timezone_windows',
-                        'home_terminal_timezone_iana',
-                    ]
+class DriverViewSet(APIView):
+    def get(self, request, driver_id=None):
+        if driver_id:
+            try:
+                driverObj = Driver.objects.get(driver_id=driver_id)
+            except Driver.DoesNotExist:
+                return Response(
+                    {"error": "Driver not found"}, status=status.HTTP_404_NOT_FOUND
                 )
-
+            else:
+                serializer = DriverSerializer(driverObj)
+                return Response(serializer.data, status=status.HTTP_200_OK)
+        else:
             drivers = Driver.objects.all()
             serializer = DriverSerializer(drivers, many=True)
             return Response(serializer.data, status=status.HTTP_200_OK)
-        
-        return Response({'error': 'Failed to fetch data from ProLogs API'}, status=response.status_code)
 
 
 class HOSViolationListView(APIView):
@@ -147,3 +57,70 @@ class HOSViolationListView(APIView):
         violations = HOSViolation.objects.all()
         serializer = HOSViolationSerializer(violations, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class DriverViolationView(APIView):
+    def get(self, request, driver_id):
+        try:
+            driverObj = Driver.objects.get(driver_id=driver_id)
+        except Driver.DoesNotExist:
+            return Response(
+                {"error": "Driver not found"}, status=status.HTTP_404_NOT_FOUND
+            )
+        else:
+            violations = check_hos_compliance(driver=driverObj)
+            return Response(violations, status=status.HTTP_200_OK)
+
+
+class ScheduleView(APIView):
+    def post(self, request):
+        serializer = ScheduleRequestSerializer(data=request.data)
+        if serializer.is_valid():
+            data = serializer.validated_data
+            schedule = plan_driving_schedule(**data)
+            return Response(schedule, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class UpdateDbView(APIView):
+    def get(self, request, model=None):
+        if model not in ["drivers", "trucks", "all"]:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        if model == "drivers":
+            updated = db_update_drivers()
+            if updated:
+                return Response(
+                    {"message": "Drivers successfully updated in database"},
+                    status=status.HTTP_200_OK,
+                )
+            else:
+                return Response(
+                    {"message": "Not able to update drivers in database"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+        elif model == "trucks":
+            updated = db_update_trucks()
+            if updated:
+                return Response(
+                    {"message": "Trucks successfully updated in database"},
+                    status=status.HTTP_200_OK,
+                )
+            else:
+                return Response(
+                    {"message": "Not able to update trucks in database"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+        else:
+            updated_drivers = db_update_drivers()
+            updated_trucks = db_update_trucks()
+            if updated_drivers and updated_trucks:
+                return Response(
+                    {"message": "Drivers and Trucks successfully updated in database"},
+                    status=status.HTTP_200_OK,
+                )
+            else:
+                return Response(
+                    {"message": "Not able to update drivers/trucks in database"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
