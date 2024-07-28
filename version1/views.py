@@ -1,11 +1,10 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from version1.models import Truck, Driver, HOSViolation
+from version1.models import Truck, Driver
 from version1.serializers import (
     TruckSerializer,
     DriverSerializer,
-    HOSViolationSerializer,
     ScheduleRequestSerializer,
 )
 from version1.utils import (
@@ -52,24 +51,37 @@ class DriverViewSet(APIView):
             return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-class HOSViolationListView(APIView):
-    def get(self, request):
-        violations = HOSViolation.objects.all()
-        serializer = HOSViolationSerializer(violations, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+# class HOSViolationListView(APIView):
+#     def get(self, request):
+#         violations = HOSViolation.objects.all()
+#         serializer = HOSViolationSerializer(violations, many=True)
+#         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 class DriverViolationView(APIView):
-    def get(self, request, driver_id):
-        try:
-            driverObj = Driver.objects.get(driver_id=driver_id)
-        except Driver.DoesNotExist:
-            return Response(
-                {"error": "Driver not found"}, status=status.HTTP_404_NOT_FOUND
-            )
+    def get(self, request, driver_id=None):
+        if driver_id:
+            try:
+                driverObj = Driver.objects.get(driver_id=driver_id)
+            except Driver.DoesNotExist:
+                return Response(
+                    {"error": "Driver not found"}, status=status.HTTP_404_NOT_FOUND
+                )
+            else:
+                violations = check_hos_compliance(driver=driverObj)
+                return Response(violations, status=status.HTTP_200_OK)
         else:
-            violations = check_hos_compliance(driver=driverObj)
-            return Response(violations, status=status.HTTP_200_OK)
+            driverList = Driver.objects.all()
+            violation_list = []
+            for driver in driverList:
+                violation = check_hos_compliance(driver=driver)
+                if violation:
+                    violationDict = {
+                        driver.driver_id : violation
+                    }
+                    violation_list.append(violationDict)
+
+            return Response(violation_list, status=status.HTTP_200_OK)
 
 
 class ScheduleView(APIView):
@@ -112,8 +124,8 @@ class UpdateDbView(APIView):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
         else:
-            updated_drivers = db_update_drivers()
             updated_trucks = db_update_trucks()
+            updated_drivers = db_update_drivers()
             if updated_drivers and updated_trucks:
                 return Response(
                     {"message": "Drivers and Trucks successfully updated in database"},

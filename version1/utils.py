@@ -1,9 +1,9 @@
 import math
-from django.utils import timezone
 from datetime import timedelta
-from version1.models import Truck, Driver, HOSViolation
+from version1.models import Truck, Driver
 from version1.proLogsClient import PrologsAPIClient
 from django.db import transaction
+
 
 def db_update_drivers() -> bool:
     try:
@@ -123,30 +123,27 @@ def check_hos_compliance(driver):
     Evaluates HOS compliance for a given driver based on FMCSA regulations.
     """
     violations = []
-    current_time = timezone.now()
+    duty_time = driver.shift_work_minutes
 
     if driver.truck_type == "property":
-        max_drive_minutes = 660
+        max_drive_minutes = driver.max_shift_drive_minutes or 660  # 11 hours
+        max_duty_minutes = driver.max_shift_work_minutes or 840  # 14 hours
 
+        # Check 11-hour driving limit
         if driver.shift_drive_minutes > max_drive_minutes:
             violations.append(
                 {
                     "violation_type": "11-Hour Driving Limit",
                     "violation_description": f"Driver {driver.driver_id} drove for more than 11 hours.",
-                    "violation_time": current_time,
                 }
             )
 
         # Check 14-hour on-duty limit
-        duty_time = (current_time - driver.duty_status_start_time).total_seconds() / 60
-        max_duty_minutes = 840  # 14 hours
-
         if duty_time > max_duty_minutes:
             violations.append(
                 {
                     "violation_type": "14-Hour On-Duty Limit",
                     "violation_description": f"Driver {driver.driver_id} was on duty for more than 14 hours.",
-                    "violation_time": current_time,
                 }
             )
 
@@ -156,7 +153,6 @@ def check_hos_compliance(driver):
                 {
                     "violation_type": "30-Minute Break Requirement",
                     "violation_description": f"Driver {driver.driver_id} did not take a 30-minute break after 8 hours of driving.",
-                    "violation_time": current_time,
                 }
             )
 
@@ -166,7 +162,6 @@ def check_hos_compliance(driver):
                 {
                     "violation_type": "60/70-Hour On-Duty Limit",
                     "violation_description": f"Driver {driver.driver_id} exceeded their cycle limit of {driver.max_cycle_work_minutes / 60} hours.",
-                    "violation_time": current_time,
                 }
             )
 
@@ -176,32 +171,28 @@ def check_hos_compliance(driver):
                 {
                     "violation_type": "Sleeper Berth Provision",
                     "violation_description": f"Driver {driver.driver_id} did not meet the sleeper berth requirement.",
-                    "violation_time": current_time,
                 }
             )
 
     elif driver.truck_type == "passenger":
-        max_drive_minutes = 600
+        max_drive_minutes = driver.max_shift_drive_minutes or 600  # 10 hours
+        max_duty_minutes = driver.max_shift_work_minutes or 900  # 15 hours
 
+        # Check 10-hour driving limit
         if driver.shift_drive_minutes > max_drive_minutes:
             violations.append(
                 {
                     "violation_type": "10-Hour Driving Limit",
                     "violation_description": f"Driver {driver.driver_id} drove for more than 10 hours.",
-                    "violation_time": current_time,
                 }
             )
 
         # Check 15-hour on-duty limit
-        duty_time = (current_time - driver.duty_status_start_time).total_seconds() / 60
-        max_duty_minutes = 900
-
         if duty_time > max_duty_minutes:
             violations.append(
                 {
                     "violation_type": "15-Hour On-Duty Limit",
                     "violation_description": f"Driver {driver.driver_id} was on duty for more than 15 hours.",
-                    "violation_time": current_time,
                 }
             )
 
@@ -211,7 +202,6 @@ def check_hos_compliance(driver):
                 {
                     "violation_type": "60/70-Hour On Duty Limit",
                     "violation_description": f"Driver {driver.driver_id} exceeded their cycle limit of {driver.max_cycle_work_minutes / 60} hours.",
-                    "violation_time": current_time,
                 }
             )
 
@@ -221,18 +211,8 @@ def check_hos_compliance(driver):
                 {
                     "violation_type": "Sleeper Berth Provision",
                     "violation_description": f"Driver {driver.driver_id} did not meet the sleeper berth requirement.",
-                    "violation_time": current_time,
                 }
             )
-
-    # Store violations
-    # for violation in violations:
-    #     HOSViolation.objects.create(
-    #         driver=driver,
-    #         violation_type=violation['violation_type'],
-    #         violation_description=violation['violation_description'],
-    #         violation_time=violation['violation_time']
-    #     )
 
     return violations
 
